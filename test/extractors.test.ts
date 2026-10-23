@@ -20,6 +20,12 @@ describe('JavaScript / TypeScript', () => {
     expect(positions(source, 'a.ts')).toEqual(['2:21']);
   });
 
+  it('指摘の終わりの位置は、末尾のエスケープの後ろを指す', () => {
+    const source = 'const a = "至急\\u3002";';
+    const [issue] = lintText(source, { filePath: 'a.ts', config: only('sentence-length', { max: 1 }) }).issues;
+    expect(source.slice(issue!.column - 1, issue!.endColumn - 1)).toBe('至急\\u3002');
+  });
+
   it('テンプレートリテラルの式は1文字として数える', () => {
     const [segment] = extract('const t = `${n}件のお知らせ`;', 'a.js', { comments: false });
     expect(segment!.text).toBe(`${OBJ}件のお知らせ`);
@@ -45,6 +51,11 @@ describe('JavaScript / TypeScript', () => {
   it('JSX の属性と、式の中の文字列も調べる', () => {
     const source = '<img alt="施設の写真" title={ok ? "成功" : "失敗"} />';
     expect(texts(source, 'a.tsx')).toEqual(['施設の写真', '成功', '失敗']);
+  });
+
+  it('入れ子の要素の属性を2回調べない', () => {
+    const source = '<div><h1 title="ご案内" aria-label={"説明"}>見出し</h1><p><span title="補足">本文</span></p></div>';
+    expect(texts(source, 'a.tsx')).toEqual(['ご案内', '説明', '見出し', '補足', '本文']);
   });
 
   it('import のパスは調べない', () => {

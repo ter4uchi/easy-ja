@@ -114,7 +114,7 @@ export function extractWithLexer(
     const builder = new SegmentBuilder('string', false);
     if (s.escapes) {
       const d = decodeEscapes(raw, base + s.contentStart);
-      builder.addMapped(d.text, d.offsets);
+      builder.addMapped(d.text, d.offsets, d.ends);
     } else {
       builder.add(raw, base + s.contentStart);
     }

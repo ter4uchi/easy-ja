@@ -40,7 +40,9 @@ export function extractMarkup(source: string, options: ExtractOptions & { dialec
     for (const m of text.matchAll(mustache)) {
       builder.add(text.slice(last, m.index), start + last);
       // Svelte の {#if} {/if} {:else} は文字として数えない
-      if (!(dialect === 'svelte' && /^[#/:]/.test(m[1]!))) builder.placeholder(start + m.index);
+      if (!(dialect === 'svelte' && /^[#/:]/.test(m[1]!))) {
+        builder.placeholder(start + m.index, start + m.index + m[0].length);
+      }
       scanExpression(start + m.index, start + m.index + m[0].length);
       last = m.index + m[0].length;
     }

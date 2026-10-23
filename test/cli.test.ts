@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable, Writable } from 'node:stream';
@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { main } from '../src/cli.js';
 import { ConfigError, resolveConfig } from '../src/config.js';
 import { lintText } from '../src/linter.js';
+import { listSegments } from '../src/segments.js';
 import { only } from './helpers.js';
 
 class Capture extends Writable {
@@ -118,6 +119,120 @@ describe('CLI', () => {
     await writeFile(join(dir, 'node_modules', 'x', 'a.js'), 'const a = "至急";\n');
     const results = JSON.parse((await run(['--format', 'json'])).stdout);
     expect(results).toEqual([]);
+  });
+});
+
+describe('--format segments', () => {
+  it('チェックはせず、日本語の文字列を位置つきで一覧にする', async () => {
+    await writeFile(join(dir, 'a.tsx'), 'const a = <p>\n  {name}さん、\n  こんにちは。\n</p>;\nconst b = "en";\n');
+    await writeFile(join(dir, 'b.ts'), 'const b = "no japanese";\n');
+    const { code, stdout } = await run(['--format', 'segments']);
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout)).toEqual([
+      {
+        filePath: 'a.tsx',
+        segments: [
+          { kind: 'jsx-text', text: '{…}さん、\n  こんにちは。', line: 2, column: 3, endLine: 3, endColumn: 9 },
+        ],
+      },
+    ]);
+  });
+
+  it('標準入力からも読める', async () => {
+    const { stdout } = await run(['--format', 'segments', '--stdin'], '至急です');
+    const [file] = JSON.parse(stdout);
+    expect(file.filePath).toBe('<stdin>');
+    expect(file.segments[0]).toMatchObject({ text: '至急です', line: 1, column: 1 });
+  });
+
+  it('終わりの位置は、末尾の埋め込み式やエスケープの後ろを指す', () => {
+    const source = 'const a = <p>こんにちは{name}</p>;\nconst b = "おわり\\u3002";\nconst c = `合計${n}`;\n';
+    const lines = source.split('\n');
+    const spans = listSegments(source, { filePath: 'a.tsx' }).segments.map((s) =>
+      lines[s.line - 1]!.slice(s.column - 1, s.endColumn - 1),
+    );
+    expect(spans).toEqual(['こんにちは{name}', 'おわり\\u3002', '合計${n}']);
+  });
+});
+
+describe('ファイルの読み込み', () => {
+  it('大きすぎるファイルとバイナリファイルは飛ばし、結果はパスの順に並べる', async () => {
+    await mkdir(join(dir, 'sub'));
+    await writeFile(join(dir, 'sub', 'c.ts'), 'const c = "至急";\n');
+    await writeFile(join(dir, 'b.ts'), 'const b = "至急";\n');
+    await writeFile(join(dir, 'a.ts'), 'const a = "至急";\n');
+    await writeFile(join(dir, 'big.ts'), `const a = "至急";\n${'//\n'.repeat(1024 * 1024)}`);
+    await writeFile(join(dir, 'bin.ts'), 'const a = "至急";\u0000');
+    const { stdout } = await run(['--format', 'json']);
+    expect(JSON.parse(stdout).map((r: { filePath: string }) => r.filePath)).toEqual(['a.ts', 'b.ts', 'sub/c.ts']);
+  });
+
+  // root は権限がなくても読めてしまう
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    '読めないファイルは知らせて飛ばし、ほかのファイルは調べる',
+    async () => {
+      await writeFile(join(dir, 'a.ts'), 'const a = "至急";\n');
+      await writeFile(join(dir, 'noread.ts'), 'const b = "至急";\n');
+      await chmod(join(dir, 'noread.ts'), 0o000);
+      for (const format of ['json', 'segments']) {
+        const { stdout, stderr } = await run(['--format', format]);
+        expect(JSON.parse(stdout).map((r: { filePath: string }) => r.filePath)).toEqual(['a.ts']);
+        expect(stderr).toContain('noread.ts を読めなかったので飛ばしました（EACCES）');
+      }
+    },
+  );
+});
+
+describe('--init-skill', () => {
+  it('既定では .agents/skills/easy-ja に置く', async () => {
+    const { code } = await run(['--init-skill']);
+    expect(code).toBe(0);
+    const skill = await readFile(join(dir, '.agents', 'skills', 'easy-ja', 'SKILL.md'), 'utf8');
+    expect(skill).toMatch(/^---\nname: easy-ja\n/);
+  });
+
+  it('claude を付けると .claude/skills/easy-ja に置く', async () => {
+    expect((await run(['--init-skill', 'claude'])).code).toBe(0);
+    await expect(readFile(join(dir, '.claude', 'skills', 'easy-ja', 'SKILL.md'), 'utf8')).resolves.toContain(
+      'name: easy-ja',
+    );
+  });
+
+  it('すでにあれば上書きしない', async () => {
+    await mkdir(join(dir, '.agents', 'skills', 'easy-ja'), { recursive: true });
+    await writeFile(join(dir, '.agents', 'skills', 'easy-ja', 'SKILL.md'), '自分で書きかえた');
+    expect((await run(['--init-skill'])).code).toBe(2);
+    expect(await readFile(join(dir, '.agents', 'skills', 'easy-ja', 'SKILL.md'), 'utf8')).toBe('自分で書きかえた');
+  });
+
+  it('知らない置き場所は 2 で終わる', async () => {
+    expect((await run(['--init-skill', 'cursor'])).code).toBe(2);
+  });
+
+  // Windows ではシンボリックリンクを作るのに権限が要る
+  it.skipIf(process.platform === 'win32')('置き場所がリンク切れのシンボリックリンクでも上書きしない', async () => {
+    await mkdir(join(dir, '.agents', 'skills'), { recursive: true });
+    await symlink(join(dir, 'nowhere'), join(dir, '.agents', 'skills', 'easy-ja'));
+    const { code, stderr } = await run(['--init-skill']);
+    expect(code).toBe(2);
+    expect(stderr).toContain('すでにあります');
+  });
+
+  it('--init と一緒に付けると、両方を行う', async () => {
+    expect((await run(['--init', '--init-skill', 'claude'])).code).toBe(0);
+    await expect(readFile(join(dir, '.easyjarc.json'), 'utf8')).resolves.toContain('"rules"');
+    await expect(readFile(join(dir, '.claude', 'skills', 'easy-ja', 'SKILL.md'), 'utf8')).resolves.toContain(
+      'name: easy-ja',
+    );
+  });
+});
+
+describe('同梱のスキル', () => {
+  it('Agent Skills の規格に合っている（name がフォルダ名と同じ、description が 1024 文字以内）', async () => {
+    const skill = await readFile(new URL('../skills/easy-ja/SKILL.md', import.meta.url), 'utf8');
+    const frontmatter = /^---\n([\s\S]*?)\n---\n/.exec(skill)![1]!;
+    expect(/^name: (.+)$/m.exec(frontmatter)![1]).toBe('easy-ja');
+    expect([.../^description: (.+)$/m.exec(frontmatter)![1]!].length).toBeLessThanOrEqual(1024);
   });
 });
 

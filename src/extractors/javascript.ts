@@ -56,7 +56,7 @@ export function extractJavaScript(source: string, options: JavaScriptOptions): S
   const addStringLiteral = (node: t.StringLiteral) => {
     const d = decoded(node.start! + 1, node.end! - 1);
     const out: Segment[] = [];
-    new SegmentBuilder('string', false).addMapped(d.text, d.offsets).flush(out);
+    new SegmentBuilder('string', false).addMapped(d.text, d.offsets, d.ends).flush(out);
     segments.push(...out);
   };
 
@@ -64,9 +64,10 @@ export function extractJavaScript(source: string, options: JavaScriptOptions): S
     const builder = new SegmentBuilder('template', false);
     node.quasis.forEach((quasi, i) => {
       const d = decoded(quasi.start!, quasi.end!);
-      builder.addMapped(d.text, d.offsets);
+      builder.addMapped(d.text, d.offsets, d.ends);
       const expression = node.expressions[i];
-      if (expression) builder.placeholder(base + expression.start!);
+      // `${` から `}` まで。次の quasi はその直後から始まる
+      if (expression) builder.placeholder(base + quasi.end!, base + node.quasis[i + 1]!.start!);
     });
     builder.flush(segments);
     node.expressions.forEach((e) => visit(e));
@@ -100,13 +101,13 @@ export function extractJavaScript(source: string, options: JavaScriptOptions): S
             if (e.type === 'JSXEmptyExpression') break;
             if (e.type === 'StringLiteral') {
               const d = decoded(e.start! + 1, e.end! - 1);
-              builder.addMapped(d.text, d.offsets);
+              builder.addMapped(d.text, d.offsets, d.ends);
             } else if (e.type === 'TemplateLiteral' && e.expressions.length === 0) {
               const quasi = e.quasis[0]!;
               const d = decoded(quasi.start!, quasi.end!);
-              builder.addMapped(d.text, d.offsets);
+              builder.addMapped(d.text, d.offsets, d.ends);
             } else {
-              builder.placeholder(base + child.start!);
+              builder.placeholder(base + child.start!, base + child.end!);
               visit(e);
             }
             break;
@@ -116,20 +117,21 @@ export function extractJavaScript(source: string, options: JavaScriptOptions): S
             break;
           case 'JSXElement': {
             const name = elementName(child.openingElement.name);
-            visitAttributes(child.openingElement.attributes);
-            if (SKIP_ELEMENTS.has(name)) break;
-            if (INLINE_ELEMENTS.has(name)) {
-              const start = builder.length;
-              walkChildren(child.children);
-              if (name === 'ruby') builder.markRuby(start);
-            } else {
+            if (!SKIP_ELEMENTS.has(name) && !INLINE_ELEMENTS.has(name)) {
+              // 文の区切りになる要素。属性は handleJsx の中で調べる
               builder.flush(segments);
               handleJsx(child);
+              break;
             }
+            visitAttributes(child.openingElement.attributes);
+            if (SKIP_ELEMENTS.has(name)) break;
+            const start = builder.length;
+            walkChildren(child.children);
+            if (name === 'ruby') builder.markRuby(start);
             break;
           }
           case 'JSXSpreadChild':
-            builder.placeholder(base + child.start!);
+            builder.placeholder(base + child.start!, base + child.end!);
             visit(child.expression);
             break;
         }

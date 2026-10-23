@@ -1,10 +1,9 @@
-import { readFile, stat } from 'node:fs/promises';
-import { resolve } from 'node:path';
 import { maskAllowed, resolveConfig, type ResolvedConfig } from './config.js';
 import { createSuppressor } from './directives.js';
 import { extract } from './extractors/index.js';
-import { findFiles } from './files.js';
+import { mapSourceFiles, type ReadErrorHandler } from './files.js';
 import type { RuleReport, Severity } from './rules/index.js';
+import { computeLineStarts, position } from './text/position.js';
 import { splitSentences, type Sentence } from './text/sentence.js';
 
 export interface Issue {
@@ -33,9 +32,6 @@ export interface LintTextOptions {
   filePath?: string;
   config?: ResolvedConfig;
 }
-
-/** 大きすぎるファイル（ビルド成果物など）は調べない */
-const MAX_FILE_SIZE = 2 * 1024 * 1024;
 
 export function lintText(source: string, options: LintTextOptions = {}): LintResult {
   const config = options.config ?? resolveConfig();
@@ -74,27 +70,19 @@ export function lintText(source: string, options: LintTextOptions = {}): LintRes
 export interface LintFilesOptions {
   cwd?: string;
   config?: ResolvedConfig;
+  /** 読めなかったファイルを知らせる。指定しなければ黙って飛ばす */
+  onReadError?: ReadErrorHandler;
 }
 
 /** ファイル・ディレクトリ・glob を調べる。patterns が空なら設定の include を使う */
 export async function lintFiles(patterns: string[], options: LintFilesOptions = {}): Promise<LintResult[]> {
-  const cwd = options.cwd ?? process.cwd();
   const config = options.config ?? resolveConfig();
-  const files = await findFiles(patterns.length ? patterns : config.include, { cwd, ignore: config.ignore });
-
-  const results: LintResult[] = [];
-  const queue = [...files];
-  const worker = async () => {
-    for (let file = queue.shift(); file !== undefined; file = queue.shift()) {
-      const path = resolve(cwd, file);
-      if ((await stat(path)).size > MAX_FILE_SIZE) continue;
-      const source = await readFile(path, 'utf8');
-      if (source.includes('\u0000')) continue;
-      results.push(lintText(source, { filePath: file, config }));
-    }
-  };
-  await Promise.all(Array.from({ length: 8 }, worker));
-  return results.sort((a, b) => a.filePath.localeCompare(b.filePath));
+  return mapSourceFiles(patterns.length ? patterns : config.include, {
+    cwd: options.cwd ?? process.cwd(),
+    ignore: config.ignore,
+    map: (source, filePath) => lintText(source, { filePath, config }),
+    onReadError: options.onReadError,
+  });
 }
 
 function toIssue(
@@ -104,12 +92,12 @@ function toIssue(
   severity: Severity,
   lineStarts: number[],
 ): Issue {
-  const sourceOffset = (compactPos: number) => {
-    const textIndex = sentence.compactIndex[Math.min(compactPos, sentence.compactIndex.length - 1)] ?? 0;
-    return sentence.segment.offsets[sentence.start + textIndex] ?? 0;
-  };
-  const start = sourceOffset(report.index);
-  const end = sourceOffset(report.index + Math.max(report.length, 1) - 1) + 1;
+  const { offsets, ends } = sentence.segment;
+  /** compact 上の位置 → segment.text 上の位置 */
+  const textIndex = (compactPos: number) =>
+    sentence.start + (sentence.compactIndex[Math.min(compactPos, sentence.compactIndex.length - 1)] ?? 0);
+  const start = offsets[textIndex(report.index)] ?? 0;
+  const end = ends[textIndex(report.index + Math.max(report.length, 1) - 1)] ?? start + 1;
   const [line, column] = position(start, lineStarts);
   const [endLine, endColumn] = position(end, lineStarts);
   const issue: Issue = { ruleId, severity, message: report.message, line, column, endLine, endColumn };
@@ -117,19 +105,3 @@ function toIssue(
   return issue;
 }
 
-function computeLineStarts(source: string): number[] {
-  const starts = [0];
-  for (let i = 0; i < source.length; i++) if (source[i] === '\n') starts.push(i + 1);
-  return starts;
-}
-
-function position(offset: number, lineStarts: number[]): [line: number, column: number] {
-  let lo = 0;
-  let hi = lineStarts.length - 1;
-  while (lo < hi) {
-    const mid = (lo + hi + 1) >> 1;
-    if (lineStarts[mid]! <= offset) lo = mid;
-    else hi = mid - 1;
-  }
-  return [lo + 1, offset - lineStarts[lo]! + 1];
-}

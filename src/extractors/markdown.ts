@@ -15,7 +15,7 @@ function addInline(builder: SegmentBuilder, text: string, offset: number): void 
       // ![alt](…) は2文字、[text](…) は1文字の記号のあとに文字がある
       builder.add(label, offset + m.index + (m[2] !== undefined ? 2 : 1));
     } else if (m[1] || m[0].startsWith('<http') || m[0].startsWith('http')) {
-      builder.placeholder(offset + m.index);
+      builder.placeholder(offset + m.index, offset + m.index + m[0].length);
     }
     last = m.index + m[0].length;
   }
