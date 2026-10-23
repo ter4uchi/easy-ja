@@ -15,6 +15,8 @@ export interface Segment {
   text: string;
   /** text[i] に対応するソース上の位置。長さは text.length + 1 で、最後の要素は終端位置 */
   offsets: number[];
+  /** text[i] に対応する部分の、ソース上の終わりの位置（その直後）。`${name}` やエスケープでは開始位置 + 1 より後になる */
+  ends: number[];
   /** true のとき、単独の改行を文の区切りとして扱わない（HTML・JSX・段落テキストなど） */
   flow: boolean;
   /** <ruby> でルビがふられている範囲（text 上の [開始, 終了)） */
@@ -24,6 +26,7 @@ export interface Segment {
 export class SegmentBuilder {
   private text = '';
   private offsets: number[] = [];
+  private ends: number[] = [];
   private ruby: [number, number][] = [];
 
   constructor(
@@ -47,35 +50,49 @@ export class SegmentBuilder {
 
   /** ソースと1文字ずつ対応する文字列を追加する */
   add(str: string, sourceStart: number): this {
-    for (let i = 0; i < str.length; i++) this.offsets.push(sourceStart + i);
+    for (let i = 0; i < str.length; i++) {
+      this.offsets.push(sourceStart + i);
+      this.ends.push(sourceStart + i + 1);
+    }
     this.text += str;
     return this;
   }
 
   /** エスケープを解いた文字列など、位置を個別に指定して追加する */
-  addMapped(str: string, offsets: readonly number[]): this {
-    for (let i = 0; i < str.length; i++) this.offsets.push(offsets[i] ?? offsets.at(-1) ?? 0);
+  addMapped(str: string, offsets: readonly number[], ends: readonly number[]): this {
+    for (let i = 0; i < str.length; i++) {
+      this.offsets.push(offsets[i] ?? offsets.at(-1) ?? 0);
+      this.ends.push(ends[i] ?? ends.at(-1) ?? 0);
+    }
     this.text += str;
     return this;
   }
 
-  /** 埋め込み式を1文字の代替文字として追加する */
-  placeholder(sourceOffset: number): this {
+  /** ソース上の [sourceStart, sourceEnd) にある埋め込み式を、1文字の代替文字として追加する */
+  placeholder(sourceStart: number, sourceEnd: number): this {
     this.text += OBJ;
-    this.offsets.push(sourceOffset);
+    this.offsets.push(sourceStart);
+    this.ends.push(sourceEnd);
     return this;
   }
 
   /** 日本語を含む場合だけ out に追加し、ビルダーを空にする */
   flush(out: Segment[]): void {
     if (hasJapanese(this.text)) {
-      const end = (this.offsets.at(-1) ?? 0) + 1;
-      const segment: Segment = { kind: this.kind, text: this.text, offsets: [...this.offsets, end], flow: this.flow };
+      const end = this.ends.at(-1) ?? 0;
+      const segment: Segment = {
+        kind: this.kind,
+        text: this.text,
+        offsets: [...this.offsets, end],
+        ends: this.ends,
+        flow: this.flow,
+      };
       if (this.ruby.length) segment.ruby = this.ruby;
       out.push(segment);
     }
     this.text = '';
     this.offsets = [];
+    this.ends = [];
     this.ruby = [];
   }
 }
@@ -97,6 +114,7 @@ export function collapsePlaceholders(segment: Segment): Segment {
   if (!/[{%]/.test(segment.text)) return segment;
   let text = '';
   const offsets: number[] = [];
+  const ends: number[] = [];
   // 元の text 上の位置 → 新しい text 上の位置（ルビの範囲を直すため）
   const moved: number[] = [];
   let last = 0;
@@ -104,6 +122,7 @@ export function collapsePlaceholders(segment: Segment): Segment {
     for (let i = last; i < to; i++) {
       moved[i] = offsets.length;
       offsets.push(segment.offsets[i]!);
+      ends.push(segment.ends[i]!);
     }
     text += segment.text.slice(last, to);
   };
@@ -112,6 +131,7 @@ export function collapsePlaceholders(segment: Segment): Segment {
     for (let i = m.index; i < m.index + m[0].length; i++) moved[i] = offsets.length;
     text += OBJ;
     offsets.push(segment.offsets[m.index]!);
+    ends.push(segment.ends[m.index + m[0].length - 1]!);
     last = m.index + m[0].length;
   }
   if (last === 0) return segment;
@@ -119,7 +139,7 @@ export function collapsePlaceholders(segment: Segment): Segment {
   moved[segment.text.length] = offsets.length;
   offsets.push(segment.offsets.at(-1)!);
 
-  const result: Segment = { ...segment, text, offsets };
+  const result: Segment = { ...segment, text, offsets, ends };
   if (segment.ruby) result.ruby = segment.ruby.map(([start, end]) => [moved[start]!, moved[end]!]);
   return result;
 }

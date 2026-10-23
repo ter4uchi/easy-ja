@@ -1,12 +1,14 @@
 import { readFileSync } from 'node:fs';
-import { writeFile } from 'node:fs/promises';
+import { cp, lstat, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { ConfigError, initialConfig, loadConfig, resolveConfig, type Config } from './config.js';
 import { FileNotFoundError } from './files.js';
 import { lintFiles, lintText, type LintResult } from './linter.js';
 import { formatters } from './reporters/index.js';
 import { rules, ruleMap } from './rules/index.js';
+import { listFileSegments, listSegments, type FileSegments } from './segments.js';
 
 export interface CliIO {
   stdout: NodeJS.WritableStream & { isTTY?: boolean };
@@ -24,7 +26,8 @@ const HELP = `使い方: easy-ja [オプション] [ファイル・ディレク�
 
 オプション:
   -c, --config <path>        設定ファイルを指定する（既定: .easyjarc.json を探す）
-  -f, --format <name>        出力形式: stylish（既定）, json, github
+  -f, --format <name>        出力形式: stylish（既定）, json, github,
+                             segments（チェックせず、日本語の文字列を位置つきで一覧にする）
       --rule <id>=<重要度>    ルールの重要度を変える（error / warning / off）。何度でも指定できる
       --comments             コメントも調べる
       --ignore <glob>        調べないファイル。何度でも指定できる
@@ -34,6 +37,8 @@ const HELP = `使い方: easy-ja [オプション] [ファイル・ディレク�
       --stdin-filename <名前> 標準入力の内容をどの種類のファイルとして調べるか（例: App.tsx）
       --list-rules           ルールの一覧を表示する
       --init                 設定ファイル .easyjarc.json を作る
+      --init-skill [claude]  AI エージェント用のスキルを .agents/skills/easy-ja に置く
+                             （claude を付けると .claude/skills/easy-ja）
       --no-color             色を付けない
   -h, --help                 このヘルプを表示する
   -v, --version              バージョンを表示する
@@ -67,6 +72,7 @@ export async function main(argv: string[], io: CliIO = defaultIO()): Promise<num
         'stdin-filename': { type: 'string' },
         'list-rules': { type: 'boolean' },
         init: { type: 'boolean' },
+        'init-skill': { type: 'boolean' },
         color: { type: 'boolean' },
         help: { type: 'boolean', short: 'h' },
         version: { type: 'boolean', short: 'v' },
@@ -85,10 +91,20 @@ export async function main(argv: string[], io: CliIO = defaultIO()): Promise<num
       out(listRules());
       return 0;
     }
-    if (values.init) return await init(io, out, err);
+    if (values.init || values['init-skill']) {
+      // 両方付いていれば両方行う。引数のまちがいで途中まで作ることがないよう、スキルを先にする
+      let code = 0;
+      if (values['init-skill']) code = await initSkill(positionals, io, out, err);
+      if (values.init) code = Math.max(code, await init(io, out, err));
+      return code;
+    }
 
+    const listOnly = values.format === 'segments';
     const formatter = formatters[values.format];
-    if (!formatter) throw new UsageError(`出力形式は ${Object.keys(formatters).join(' / ')} のどれかにしてください: ${values.format}`);
+    if (!formatter && !listOnly) {
+      const names = [...Object.keys(formatters), 'segments'].join(' / ');
+      throw new UsageError(`出力形式は ${names} のどれかにしてください: ${values.format}`);
+    }
     const maxWarnings = values['max-warnings'] === undefined ? undefined : Number(values['max-warnings']);
     if (maxWarnings !== undefined && !Number.isInteger(maxWarnings)) {
       throw new UsageError(`--max-warnings には整数を指定してください: ${values['max-warnings']}`);
@@ -97,13 +113,30 @@ export async function main(argv: string[], io: CliIO = defaultIO()): Promise<num
     const { config: fileConfig } = await loadConfig(values.config, io.cwd);
     const config = resolveConfig(applyCliOverrides(fileConfig, values));
 
+    // 標準入力は、名前がなければテキストとして調べ、<stdin> と表示する
+    const stdinPath = values['stdin-filename'];
+    const onReadError = (filePath: string, error: NodeJS.ErrnoException) => {
+      err(`easy-ja: ${filePath} を読めなかったので飛ばしました（${error.code ?? error.message}）\n`);
+    };
+
+    if (listOnly) {
+      let listed: FileSegments[];
+      if (values.stdin) {
+        const source = await readStream(io.stdin);
+        listed = [{ ...listSegments(source, { filePath: stdinPath ?? 'stdin.txt', config }), filePath: stdinPath ?? '<stdin>' }];
+      } else {
+        listed = await listFileSegments(positionals, { cwd: io.cwd, config, onReadError });
+      }
+      out(JSON.stringify(listed, null, 2) + '\n');
+      return 0;
+    }
+
     let results: LintResult[];
     if (values.stdin) {
       const source = await readStream(io.stdin);
-      const filePath = values['stdin-filename'];
-      results = [{ ...lintText(source, { filePath: filePath ?? 'stdin.txt', config }), filePath: filePath ?? '<stdin>' }];
+      results = [{ ...lintText(source, { filePath: stdinPath ?? 'stdin.txt', config }), filePath: stdinPath ?? '<stdin>' }];
     } else {
-      results = await lintFiles(positionals, { cwd: io.cwd, config });
+      results = await lintFiles(positionals, { cwd: io.cwd, config, onReadError });
     }
 
     if (values.quiet) {
@@ -111,7 +144,7 @@ export async function main(argv: string[], io: CliIO = defaultIO()): Promise<num
     }
 
     const color = values.color ?? (io.env.FORCE_COLOR ? io.env.FORCE_COLOR !== '0' : Boolean(io.stdout.isTTY) && !io.env.NO_COLOR);
-    out(formatter(results, { color }));
+    out(formatter!(results, { color }));
 
     const errors = results.reduce((n, r) => n + r.errorCount, 0);
     const warnings = results.reduce((n, r) => n + r.warningCount, 0);
@@ -177,6 +210,30 @@ async function init(io: CliIO, out: (s: string) => void, err: (s: string) => voi
     throw error;
   }
   out(`${path} を作りました\n`);
+  return 0;
+}
+
+const SKILL_DIRS = { agents: '.agents/skills', claude: '.claude/skills' } as const;
+
+/** 同梱のスキルを、エージェントが読む場所にコピーする */
+async function initSkill(
+  positionals: string[],
+  io: CliIO,
+  out: (s: string) => void,
+  err: (s: string) => void,
+): Promise<number> {
+  const [target = 'agents', ...rest] = positionals;
+  if (rest.length > 0 || !Object.hasOwn(SKILL_DIRS, target)) {
+    throw new UsageError(`--init-skill のあとには何も付けないか、claude を付けてください: ${positionals.join(' ')}`);
+  }
+  const dest = resolve(io.cwd, SKILL_DIRS[target as keyof typeof SKILL_DIRS], 'easy-ja');
+  // lstat にして、リンク切れのシンボリックリンクも「すでにある」とみなす
+  if (await lstat(dest).then(() => true, () => false)) {
+    err(`easy-ja: ${dest} はすでにあります。新しいスキルに置きかえるときは、先に削除してください\n`);
+    return 2;
+  }
+  await cp(fileURLToPath(new URL('../skills/easy-ja/', import.meta.url)), dest, { recursive: true });
+  out(`${dest} にスキルを置きました\n`);
   return 0;
 }
 
