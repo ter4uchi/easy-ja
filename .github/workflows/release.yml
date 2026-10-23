@@ -1,0 +1,50 @@
+name: Release
+
+# develop から main にマージされたら、テストを通したうえで vYY.MM.PATCH のタグを付けて GitHub Release を作る
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+# 続けてマージされても、同じ番号のタグを2回作らないように1つずつ実行する
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # 既存のタグから PATCH を決めるため、タグもすべて取得する
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+      - name: タグ名を決める
+        id: version
+        run: |
+          # 月の区切りは日本時間で決める。npm の semver に合わせ、月は 0 で埋めない（例: v27.1.0）
+          prefix="v$(TZ=Asia/Tokyo date +%-y.%-m)"
+          patch=0
+          for tag in $(git tag --list "$prefix.*"); do
+            n="${tag#"$prefix."}"
+            if [[ "$n" =~ ^[0-9]+$ ]] && (( n >= patch )); then patch=$((n + 1)); fi
+          done
+          echo "tag=$prefix.$patch" >> "$GITHUB_OUTPUT"
+
+      - name: GitHub Release を作る
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: gh release create "$TAG" --target "$GITHUB_SHA" --title "$TAG" --generate-notes
