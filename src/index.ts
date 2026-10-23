@@ -21,5 +21,12 @@ export {
   type Severity,
   type SeveritySetting,
 } from './rules/index.js';
+export {
+  listFileSegments,
+  listSegments,
+  PLACEHOLDER_MARK,
+  type FileSegments,
+  type SegmentEntry,
+} from './segments.js';
 export type { Segment, SegmentKind } from './text/segment.js';
 export { splitSentences, type Sentence } from './text/sentence.js';

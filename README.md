@@ -1,4 +1,4 @@
-# easy-ja-cli
+# easy-ja
 
 ソースコードに書かれた日本語が「わかりやすい」かを調べる CLI です。
 
@@ -23,8 +23,10 @@ examples/library-notice.tsx
 Node.js 22.18 以上（または 24.11 以上）が必要です。
 
 ```sh
-npm install --save-dev easy-ja-cli
+npm install --save-dev @ter4uchi/easy-ja
 ```
+
+インストールすると `easy-ja` コマンドが使えます。インストールせずに試すときは `npx @ter4uchi/easy-ja` と書いてください（`npx easy-ja` だと、npm で `easy-ja` という名前のパッケージを探します。今はありませんが、だれかが同じ名前で公開すると、そのパッケージが動いてしまいます）。
 
 ## 使い方
 
@@ -39,7 +41,7 @@ cat App.tsx | npx easy-ja --stdin --stdin-filename App.tsx
 | オプション | 説明 |
 | --- | --- |
 | `-c, --config <path>` | 設定ファイルを指定する（既定では `.easyjarc.json` を上のディレクトリへ向かって探す） |
-| `-f, --format <name>` | 出力形式。`stylish`（既定）・`json`・`github` |
+| `-f, --format <name>` | 出力形式。`stylish`（既定）・`json`・`github`。`segments` はチェックをせず、日本語の文字列を位置つきの JSON で一覧にする |
 | `--rule <id>=<重要度>` | ルールの重要度を変える。`error`・`warning`・`off`。何度でも指定できる |
 | `--comments` | コメントも調べる |
 | `--ignore <glob>` | 調べないファイル。何度でも指定できる |
@@ -48,6 +50,7 @@ cat App.tsx | npx easy-ja --stdin --stdin-filename App.tsx
 | `--stdin` / `--stdin-filename <名前>` | 標準入力から読む。名前の拡張子で調べ方が決まる |
 | `--list-rules` | ルールの一覧を表示する |
 | `--init` | 設定ファイル `.easyjarc.json` を作る |
+| `--init-skill [claude]` | AI エージェント用のスキルを置く（[AI エージェントと使う](#ai-エージェントと使う)） |
 | `--no-color` | 色を付けない |
 
 終了コードは、問題なし（警告だけを含む）が `0`、エラーがあるか警告が `--max-warnings` をこえたときが `1`、設定や引数がまちがっているときが `2` です。
@@ -72,15 +75,48 @@ cat App.tsx | npx easy-ja --stdin --stdin-filename App.tsx
 
 ### 調べられないこと
 
-次の項目は文脈や見た目の判断が必要なため、このツールでは調べません。レビューで確かめてください。
+次の項目は文脈の判断が必要なため、コマンドでは調べません。AI エージェントを使っているなら、同梱のスキルで確かめられます（[AI エージェントと使う](#ai-エージェントと使う)）。そうでなければレビューで確かめてください。
 
 - 比喩・暗喩・擬人法を使っていないか（p.3）
 - 主語を省いていないか（p.5）
 - 必要度の低い情報を削ったか、具体的な情報を入れたか（p.2・p.3）
 - 話が時系列に沿っているか、手順に番号を付けているか（p.4）
 - 名称などの表記を統一しているか（p.3）
+- 読み手の年齢に合ったことばか（p.8）
+
+次の項目は実際の画面や使い方に関わるため、スキルでも扱いません。
+
 - 文字の大きさ、写真・イラスト・絵記号、レイアウト（p.6・p.7）
-- 口頭での説明や動画・音声などの併用、読み手の年齢に合ったことば（p.8）
+- 口頭での説明や動画・音声などの併用（p.8）
+
+## AI エージェントと使う
+
+コマンドでは判断できない項目は、AI エージェントにスキルとして手順を渡し、エージェントに判断してもらえます。easy-ja 自体は AI を呼び出さないので、どのモデルやエージェントを使うかは自由です。API キーも要りません。
+
+```sh
+npx easy-ja --init-skill          # .agents/skills/easy-ja/ に置く
+npx easy-ja --init-skill claude   # .claude/skills/easy-ja/ に置く（Claude Code 向け）
+```
+
+スキルは [Agent Skills](https://agentskills.io) 形式の `SKILL.md` です。エージェントは次の手順でチェックします。
+
+1. `npx @ter4uchi/easy-ja --format json` で機械的なチェックをする
+2. `npx @ter4uchi/easy-ja --format segments` で日本語の文字列を一覧にし、画面に出るものについて比喩・主語の省略・表記のゆれなどを読んで判断する
+3. 指摘と書きかえ案をまとめる。頼まれれば直し、もう一度 1 を実行して確かめる
+
+スキルを読む場所はエージェントによって違います。
+
+| エージェント | `.agents/skills/` | `.claude/skills/` |
+| --- | --- | --- |
+| OpenAI Codex | 読む | — |
+| GitHub Copilot（VS Code など） | 読む | 読む |
+| Cursor | 読む | 読む |
+| Gemini CLI | 読む | — |
+| Claude Code | — | 読む |
+
+Claude Code を使うなら `claude` を付けてください。両方に置くと、両方を読むエージェントで同じスキルが2つ見えることがあります。スキルに対応していない AI でも、`SKILL.md` の中身を指示として渡せば同じ手順で使えます。
+
+すでにスキルがあるときは上書きしません。新しい版に置きかえるときは、フォルダを削除してからもう一度実行してください。
 
 ## 調べる場所
 
@@ -182,7 +218,7 @@ jobs:
 ## プログラムから使う
 
 ```ts
-import { lintText, lintFiles, loadConfig, resolveConfig } from 'easy-ja-cli';
+import { lintText, lintFiles, loadConfig, resolveConfig } from '@ter4uchi/easy-ja';
 
 const result = lintText('本日十六時より開始します。');
 console.log(result.issues);

@@ -63,7 +63,7 @@ export function extractYaml(source: string, options: ExtractOptions): Segment[] 
       const end = findClosingQuote(value);
       const d = decodeEscapes(value.slice(1, end), start + valueStart + 1);
       const out: Segment[] = [];
-      new SegmentBuilder('string', false).addMapped(d.text, d.offsets).flush(out);
+      new SegmentBuilder('string', false).addMapped(d.text, d.offsets, d.ends).flush(out);
       segments.push(...out);
     } else if (quote === "'") {
       const m = /^'((?:[^']|'')*)'?/.exec(value)!;

@@ -1,5 +1,5 @@
 {
-  "name": "easy-ja-cli",
+  "name": "@ter4uchi/easy-ja",
   "version": "0.1.0",
   "description": "厚生労働省「わかりやすい情報提供に関するガイドライン」に沿って、ソースコード内の日本語をチェックする CLI",
   "keywords": [
@@ -12,6 +12,15 @@
     "わかりやすい日本語"
   ],
   "license": "MIT",
+  "author": "ter4uchi",
+  "homepage": "https://github.com/ter4uchi/easy-ja#readme",
+  "bugs": {
+    "url": "https://github.com/ter4uchi/easy-ja/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ter4uchi/easy-ja.git"
+  },
   "type": "module",
   "bin": {
     "easy-ja": "bin/easy-ja.js"
@@ -28,10 +37,14 @@
   "files": [
     "bin",
     "dist",
+    "skills",
     "README.md"
   ],
   "engines": {
     "node": "^22.18.0 || >=24.11.0"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
