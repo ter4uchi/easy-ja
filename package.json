@@ -1,6 +1,6 @@
 {
   "name": "@ter4uchi/easy-ja",
-  "version": "0.1.0",
+  "version": "26.10.0",
   "description": "厚生労働省「わかりやすい情報提供に関するガイドライン」に沿って、ソースコード内の日本語をチェックする CLI",
   "keywords": [
     "japanese",
