@@ -5,7 +5,7 @@
 厚生労働省の[わかりやすい情報提供に関するガイドライン](https://www.mhlw.go.jp/seisakunitsuite/bunya/hukushi_kaigo/shougaishahukushi/dl/171020-01.pdf)（平成27年度障害者総合福祉推進事業、社会福祉法人大阪手をつなぐ育成会 作成）のうち、機械的に調べられる項目をルールにしています。画面の文言・エラーメッセージ・お知らせ文などを、知的障害のある人や外国人、高齢者、子どもにも伝わる日本語にするために使います。
 
 ```console
-$ npx easy-ja examples/
+$ npx @ter4uchi/easy-ja examples/
 examples/library-notice.tsx
   3:23   warning  「貸出」は難しいことばです。「貸す」のように言いかえてください。  difficult-word
   4:19   warning  漢数字は使わず、算用数字で書いてください：「十六時」→「午後4時」  kanji-numeral
@@ -40,7 +40,7 @@ cat App.tsx | npx easy-ja --stdin --stdin-filename App.tsx
 
 | オプション | 説明 |
 | --- | --- |
-| `-c, --config <path>` | 設定ファイルを指定する（既定では `.easyjarc.json` を上のディレクトリへ向かって探す） |
+| `-c, --config <path>` | 設定ファイルを指定する（既定では[設定ファイル](#設定)を上のディレクトリへ向かって探す） |
 | `-f, --format <name>` | 出力形式。`stylish`（既定）・`json`・`github`。`segments` はチェックをせず、日本語の文字列を位置つきの JSON で一覧にする |
 | `--rule <id>=<重要度>` | ルールの重要度を変える。`error`・`warning`・`off`。何度でも指定できる |
 | `--comments` | コメントも調べる |
@@ -52,6 +52,8 @@ cat App.tsx | npx easy-ja --stdin --stdin-filename App.tsx
 | `--init` | 設定ファイル `.easyjarc.json` を作る |
 | `--init-skill [claude]` | AI エージェント用のスキルを置く（[AI エージェントと使う](#ai-エージェントと使う)） |
 | `--no-color` | 色を付けない |
+| `-h, --help` | ヘルプを表示する |
+| `-v, --version` | バージョンを表示する |
 
 終了コードは、問題なし（警告だけを含む）が `0`、エラーがあるか警告が `--max-warnings` をこえたときが `1`、設定や引数がまちがっているときが `2` です。
 
@@ -104,15 +106,17 @@ npx easy-ja --init-skill claude   # .claude/skills/easy-ja/ に置く（Claude C
 2. `npx @ter4uchi/easy-ja --format segments` で日本語の文字列を一覧にし、画面に出るものについて比喩・主語の省略・表記のゆれなどを読んで判断する
 3. 指摘と書きかえ案をまとめる。頼まれれば直し、もう一度 1 を実行して確かめる
 
-スキルを読む場所はエージェントによって違います。
+スキルを読む場所はエージェントによって違います（2026年10月時点の各ツールのドキュメントによる）。
 
 | エージェント | `.agents/skills/` | `.claude/skills/` |
 | --- | --- | --- |
-| OpenAI Codex | 読む | — |
+| OpenAI Codex | 読む | 読まない |
 | GitHub Copilot（VS Code など） | 読む | 読む |
 | Cursor | 読む | 読む |
-| Gemini CLI | 読む | — |
-| Claude Code | — | 読む |
+| Gemini CLI | 読む※ | 読まない |
+| Claude Code | 読まない | 読む |
+
+※ Gemini CLI は、そのフォルダを信頼済みにしたときだけ、プロジェクトのスキルを読みます。
 
 Claude Code を使うなら `claude` を付けてください。両方に置くと、両方を読むエージェントで同じスキルが2つ見えることがあります。スキルに対応していない AI でも、`SKILL.md` の中身を指示として渡せば同じ手順で使えます。
 
@@ -125,9 +129,9 @@ Claude Code を使うなら `claude` を付けてください。両方に置く�
 | ファイル | 調べる部分 |
 | --- | --- |
 | `.js` `.jsx` `.ts` `.tsx` `.mjs` `.cjs` `.mts` `.cts` | 文字列・テンプレートリテラル・JSX のテキストと属性 |
-| `.vue` `.svelte` `.html` `.xml` | テキスト・属性・`{{ }}` やバインド属性の中の文字列・`<script>` |
-| `.md` `.mdx` | 本文・見出し・リスト・表（コードブロックは除く） |
-| `.json` `.yml` `.yaml` `.po` `.arb` | 値（i18n の翻訳ファイルなど） |
+| `.vue` `.svelte` `.html` `.htm` `.xhtml` `.xml` | テキスト・属性・`{{ }}` やバインド属性の中の文字列・`<script>` |
+| `.md` `.markdown` `.mdx` | 本文・見出し・リスト・表（コードブロックは除く） |
+| `.json` `.jsonc` `.json5` `.yml` `.yaml` `.po` `.pot` `.arb` | 値（i18n の翻訳ファイルなど） |
 | `.py` `.rb` `.go` `.java` `.kt` `.swift` `.dart` `.rs` `.php` `.c` `.cpp` `.cs` など | 文字列 |
 | `.txt` | 全体 |
 
@@ -136,10 +140,13 @@ Claude Code を使うなら `claude` を付けてください。両方に置く�
 - `{name}`・`${name}`・`{{ name }}`・`%s` などのプレースホルダーは1文字として数えます。
 - `import` のパスは調べません。
 - `node_modules`・`dist`・`build`・`coverage` などは調べません。
+- 2MB をこえるファイルとバイナリファイルは調べません。読めないファイルは、警告を出して飛ばします。
 
 ## 設定
 
-`npx easy-ja --init` で、すべてのルールを既定値で並べた `.easyjarc.json` を作れます。`package.json` の `"easyJa"` に書くこともできます。
+設定ファイルは `.easyjarc.json` か `easy-ja.config.json` です。`package.json` の `"easyJa"` に書くこともできます。コマンドを実行したディレクトリから上へ向かって探し、最初に見つかったものを使います。
+
+`npx easy-ja --init` で、すべてのルールを既定値で並べた `.easyjarc.json` を作れます。
 
 ```json
 {
@@ -205,8 +212,8 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
       - run: npm ci
@@ -230,6 +237,8 @@ const results = await lintFiles(['src'], { config: resolveConfig(config) });
 
 `lintText` の `filePath` に拡張子付きの名前を渡すと、その種類のファイルとして調べます（例：`{ filePath: 'App.tsx' }`）。
 
+`listSegments`・`listFileSegments` は、`--format segments` と同じく、チェックをせずに日本語の文字列を位置つきで返します。
+
 ## データについて
 
 - 学年別の漢字は、文部科学省「小学校学習指導要領」（2017年告示・2020年施行）の学年別漢字配当表（1026字）を使っています。
@@ -244,3 +253,11 @@ npm run typecheck  # 型チェック
 npm run build      # dist/ に出力
 node bin/easy-ja.js examples/
 ```
+
+### ブランチとリリース
+
+- `develop` から `feat/…`・`fix/…`・`doc/…` のブランチを作り、`develop` に PR でマージします。
+- リリースするときは、`develop` から `main` に PR を作り、「Create a merge commit」でマージします。
+- `main` にマージされると、GitHub Actions（[release.yml](.github/workflows/release.yml)）がテストを実行し、`package.json` のバージョンを書きかえて、タグと GitHub Release を作ります。そのあと `main` を `develop` にマージします。
+- バージョンは `YY.MM.PATCH` です。日本時間の年・月と、その月の何回目のリリースか（0 から数える）を表します。例：2026年10月の最初のリリースは `26.10.0`（タグは `v26.10.0`）。
+- バージョンは手で書きかえないでください。
