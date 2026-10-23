@@ -43,8 +43,33 @@ jobs:
           done
           echo "tag=$prefix.$patch" >> "$GITHUB_OUTPUT"
 
+      # GITHUB_TOKEN での push では、このワークフローはもう一度動かない
+      - name: package.json のバージョンを書きかえて main に push する
+        id: bump
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          npm version "${TAG#v}" --no-git-tag-version
+          git commit -am "$TAG をリリース"
+          git push origin HEAD:main
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: GitHub Release を作る
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
-        run: gh release create "$TAG" --target "$GITHUB_SHA" --title "$TAG" --generate-notes
+          SHA: ${{ steps.bump.outputs.sha }}
+        run: gh release create "$TAG" --target "$SHA" --title "$TAG" --generate-notes
+
+      # develop の package.json も同じバージョンにする
+      - name: main を develop にマージする
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          SHA: ${{ steps.bump.outputs.sha }}
+        run: |
+          git fetch origin develop
+          git checkout -B develop origin/develop
+          git merge --no-edit -m "$TAG を develop にマージ" "$SHA"
+          git push origin develop
